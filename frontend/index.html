@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>StreakGate — Daily Check-In for Agent ID Holders</title>
+<!--
+  StreakGate frontend (live).
+  - Wallet connection: plain injected wallet via window.ethereum. No QR code,
+    no pairing code, no third-party login of any kind.
+  - CONTRACT_ADDRESS is the deployed AgentCheckIn contract on BNB Chain
+    (BSC mainnet). The ABI matches contracts/AgentCheckIn.sol.
+  - Ethers v6 via CDN is fine for this sketch; pin/vendor it for production.
+-->
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0b0e1a; --panel:#131830; --panel2:#1a2042; --line:#2a3160;
+    --text:#eef0ff; --muted:#9aa3d0; --accent:#ffb020; --accent2:#ff5e3a;
+    --good:#37d99a; --bad:#ff5470; --radius:16px;
+  }
+  *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,sans-serif;
+    background:radial-gradient(1000px 500px at 50% -10%,#232a5e 0%,var(--bg) 55%);color:var(--text)}
+  .wrap{max-width:960px;margin:0 auto;padding:28px 18px 60px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  .brand{display:flex;align-items:center;gap:12px}
+  .logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+    display:grid;place-items:center;box-shadow:0 6px 24px rgba(255,94,58,.35)}
+  .logo svg{width:26px;height:26px}
+  h1{font-size:26px;margin:0;letter-spacing:.3px}
+  .tagline{color:var(--muted);font-size:13px;margin-top:2px}
+  .badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:5px 10px;border-radius:999px;
+    border:1px solid var(--line);background:var(--panel);color:var(--muted)}
+  .badge.ok{color:var(--good);border-color:rgba(55,217,154,.4)}
+  .badge.no{color:var(--bad);border-color:rgba(255,84,112,.4)}
+  button{cursor:pointer;border:0;border-radius:12px;font-weight:600}
+  .btn-connect{background:var(--panel2);color:var(--text);border:1px solid var(--line);padding:10px 16px}
+  .season{margin:22px 0;padding:14px 18px;border-radius:var(--radius);border:1px solid var(--line);
+    background:linear-gradient(90deg,rgba(255,176,32,.12),rgba(255,94,58,.10));display:flex;
+    justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}
+  .season b{color:var(--accent)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin:18px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+  .card .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}
+  .card .value{font-size:30px;font-weight:800;margin-top:6px}
+  .hero{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:26px;text-align:center;margin:18px 0}
+  .flame-wrap{display:flex;justify-content:center}
+  .flame{width:74px;height:74px;filter:drop-shadow(0 0 22px rgba(255,120,40,.55));animation:flicker 1.6s ease-in-out infinite}
+  @keyframes flicker{0%,100%{transform:scale(1) rotate(-1.2deg)}50%{transform:scale(1.06) rotate(1.2deg)}}
+  .streak-num{font-size:56px;font-weight:900;line-height:1;margin-top:4px}
+  .streak-sub{color:var(--muted);margin-top:4px}
+  .btn-checkin{margin-top:18px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#1a1005;
+    font-size:17px;padding:14px 34px;box-shadow:0 8px 28px rgba(255,94,58,.35)}
+  .btn-checkin:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+  .status{margin-top:12px;font-size:13px;color:var(--muted);min-height:18px}
+  .progress{height:12px;background:var(--panel2);border-radius:999px;position:relative;margin:26px 6px 8px}
+  .progress .fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0%}
+  .progress .mark{position:absolute;top:-5px;width:22px;height:22px;border-radius:50%;background:var(--panel2);
+    border:2px solid var(--line);display:grid;place-items:center;font-size:10px;font-weight:700;color:var(--muted);transform:translateX(-50%)}
+  .progress .mark.hit{background:var(--accent);color:#1a1005;border-color:var(--accent)}
+  .marks-labels{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin:0 2px}
+  .tiers{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .tier{flex:1;min-width:150px;border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel2)}
+  .tier.earned{border-color:var(--accent)}
+  .tier .t-name{font-weight:700}.tier .t-desc{color:var(--muted);font-size:12px;margin-top:2px}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  th,td{padding:10px 8px;text-align:left;border-bottom:1px solid var(--line);font-size:14px}
+  th{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+  tr.top td{font-weight:700}
+  .chip{font-size:11px;padding:3px 8px;border-radius:999px;background:var(--panel2);border:1px solid var(--line)}
+  .chip.t1{color:#ffd166}.chip.t2{color:#ff9e57}.chip.t3{color:#ff5e3a;border-color:var(--accent2)}
+  .addr{font-family:ui-monospace,Menlo,monospace;font-size:13px}
+  footer{color:var(--muted);font-size:12px;margin-top:28px;line-height:1.6}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="logo">
+        <!-- flame mark (inline SVG, no emoji) -->
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 2c1 4-4 6-4 10a4.5 4.5 0 0 0 9 0c0-2-1-3.2-1.8-4.6-.9 1-1.5 1.6-2.2 2C13.2 7 13 4.5 12 2z" fill="#fff"/><path d="M12 22a6.5 6.5 0 0 1-6.5-6.5c0-1.2.3-2.3.9-3.3.5 1 1.2 1.7 2.1 2.2C8.2 13 9 10.6 10.5 9c2-2.1 3-4.4 3-7 2.8 2.3 5 6 5 9.5A6.5 6.5 0 0 1 12 22z" fill="#fff" opacity=".55"/></svg>
+      </div>
+      <div>
+        <h1>StreakGate</h1>
+        <div class="tagline">The daily check-in for Agent ID holders. Holders only — no Agent ID, no check-in.</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <span id="holderBadge" class="badge hidden">checking…</span>
+      <button id="connectBtn" class="btn-connect">Connect wallet</button>
+    </div>
+  </header>
+
+  <div class="season">
+    <div><b>Season 1 — Genesis</b> · every check-in inside the season counts on the season board</div>
+    <div id="seasonInfo" class="tagline">loading season…</div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="label">Total check-ins</div><div class="value" id="statTotal">–</div></div>
+    <div class="card"><div class="label">Unique holders checked in</div><div class="value" id="statUnique">–</div></div>
+    <div class="card"><div class="label">Season 1 check-ins</div><div class="value" id="statSeason">–</div></div>
+    <div class="card"><div class="label">Your lifetime check-ins</div><div class="value" id="statMine">–</div></div>
+  </div>
+
+  <section class="hero">
+    <div class="flame-wrap">
+      <svg class="flame" viewBox="0 0 24 24"><defs><linearGradient id="fg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#ffb020"/><stop offset="100%" stop-color="#ff5e3a"/></linearGradient></defs>
+        <path d="M12 22a6.5 6.5 0 0 1-6.5-6.5c0-1.2.3-2.3.9-3.3.5 1 1.2 1.7 2.1 2.2C8.2 13 9 10.6 10.5 9c2-2.1 3-4.4 3-7 2.8 2.3 5 6 5 9.5A6.5 6.5 0 0 1 12 22z" fill="url(#fg)"/>
+        <path d="M12 19.5a3.4 3.4 0 0 1-3.4-3.4c0-1.4.7-2.4 1.5-3.4.4 0.7.9 1.2 1.6 1.6-.2-1.3.1-2.8 1-4.1 1.3 1.3 2.7 3.3 2.7 5.9a3.4 3.4 0 0 1-3.4 3.4z" fill="#ffe9b0"/>
+      </svg>
+    </div>
+    <div class="streak-num" id="streakNum">0</div>
+    <div class="streak-sub" id="streakSub">day streak — connect your wallet to see yours</div>
+
+    <div class="progress"><div class="fill" id="msFill"></div>
+      <div class="mark" id="mark7"  style="left:23.3%">7</div>
+      <div class="mark" id="mark14" style="left:46.6%">14</div>
+      <div class="mark" id="mark30" style="left:100%">30</div>
+    </div>
+    <div class="marks-labels"><span>start</span><span id="msLabel">Milestones at 7 · 14 · 30 days</span><span></span></div>
+
+    <div class="tiers">
+      <div class="tier" id="tier1"><div class="t-name">Tier 1 · Spark</div><div class="t-desc">7-day streak — milestone recorded on-chain</div></div>
+      <div class="tier" id="tier2"><div class="t-name">Tier 2 · Blaze</div><div class="t-desc">14-day streak — milestone recorded on-chain</div></div>
+      <div class="tier" id="tier3"><div class="t-name">Tier 3 · Inferno</div><div class="t-desc">30-day streak — the full month, on-chain</div></div>
+    </div>
+
+    <button id="checkinBtn" class="btn-checkin" disabled>Check in today</button>
+    <div class="status" id="status">Streaks are reputation, not rewards: milestones are on-chain recognition only — nothing is paid out, ever.</div>
+  </section>
+
+  <section class="card">
+    <div class="label">Leaderboard — top streaks among Agent ID holders</div>
+    <table>
+      <thead><tr><th>#</th><th>Holder</th><th>Live streak</th><th>Total check-ins</th><th>Milestone tier</th></tr></thead>
+      <tbody id="lbBody"><tr><td colspan="5" style="color:var(--muted)">Connect or wait — loading from the contract…</td></tr></tbody>
+    </table>
+    <div class="tagline" style="margin-top:8px">Read live from the contract's leaderboard getters; every address listed is a verified Agent ID holder — the gate is enforced on-chain.</div>
+  </section>
+
+  <footer>
+    StreakGate is an independent community project built for the Agent ID Hackathon.
+    It is not affiliated with Binance or BNB Chain. Check-ins move no assets and cost
+    only network gas. Milestones are non-transferable on-chain records — they cannot
+    be sold, traded, or redeemed, and they promise no return of any kind.
+  </footer>
+</div>
+
+<script>
+/* ================= CONFIG — EDIT AFTER DEPLOYMENT ================= */
+const CONTRACT_ADDRESS = "0x97ec62795ce9884597a79950eafcae03a8402b78"; // AgentCheckIn on BNB Chain (BSC mainnet)
+const BSC_CHAIN_ID = 56n;
+/* Minimal ABI for contracts/AgentCheckIn.sol */
+const ABI = [
+  "function checkIn()",
+  "function isHolder(address) view returns (bool)",
+  "function hasCheckedInToday(address) view returns (bool)",
+  "function liveStreak(address) view returns (uint256)",
+  "function getUserStats(address) view returns (uint256,uint256,uint256,uint256,uint256,uint8,uint256)",
+  "function getMilestoneProgress(address) view returns (uint8,uint256,uint256)",
+  "function getGlobalStats() view returns (uint256,uint256,uint256)",
+  "function getSeasonStats() view returns (uint256,uint256,bool,uint256)",
+  "function checkersCount() view returns (uint256)",
+  "function getLeaderboardPage(uint256,uint256) view returns (address[],uint256[],uint256[],uint8[])"
+];
+/* ================================================================ */
+
+const $ = id => document.getElementById(id);
+let provider, signer, account, contract;
+
+function short(a){ return a.slice(0,6) + "…" + a.slice(-4); }
+function setStatus(t){ $("status").textContent = t; }
+
+async function getReadContract(){
+  // Read-only provider for public stats/leaderboard (no wallet needed).
+  const rpc = new ethers.JsonRpcProvider("https://bsc-dataseed.binance.org");
+  return new ethers.Contract(CONTRACT_ADDRESS, ABI, rpc);
+}
+
+async function loadPublic(){
+  try{
+    const c = await getReadContract();
+    const [total, unique] = await c.getGlobalStats();
+    const [, , , seasonCount] = await c.getSeasonStats();
+    $("statTotal").textContent = total.toString();
+    $("statUnique").textContent = unique.toString();
+    $("statSeason").textContent = seasonCount.toString();
+    await loadSeason(c);
+    await loadLeaderboard(c);
+  }catch(e){ /* contract not deployed yet in this sketch */ }
+}
+
+async function loadSeason(c){
+  const [start, end, active] = await c.getSeasonStats();
+  const endDate = new Date(Number(end) * 1000);
+  const tick = () => {
+    const left = Math.max(0, Math.floor(endDate - Date.now()) / 1000);
+    const d = Math.floor(left / 86400), h = Math.floor(left % 86400 / 3600), m = Math.floor(left % 3600 / 60);
+    $("seasonInfo").textContent = active ? `Season ends in ${d}d ${h}h ${m}m · ${endDate.toUTCString()}` : "Season 1 has ended — streaks continue";
+  };
+  tick(); setInterval(tick, 30000);
+}
+
+async function loadLeaderboard(c){
+  try{
+    const count = Number(await c.checkersCount());
+    let rows = [];
+    for(let off = 0; off < count; off += 100){           // page through the on-chain data layer
+      const [addrs, totals, streaks, tiers] = await c.getLeaderboardPage(off, 100);
+      addrs.forEach((a, i) => rows.push({ a, total: Number(totals[i]), streak: Number(streaks[i]), tier: Number(tiers[i]) }));
+    }
+    rows.sort((x, y) => y.streak - x.streak || y.total - x.total);
+    const tierName = t => ["—","Spark","Blaze","Inferno"][t] || "—";
+    $("lbBody").innerHTML = rows.slice(0, 20).map((r, i) => `
+      <tr class="${i < 3 ? "top" : ""}">
+        <td>${i + 1}</td>
+        <td class="addr">${short(r.a)}</td>
+        <td>${r.streak} day${r.streak === 1 ? "" : "s"}</td>
+        <td>${r.total}</td>
+        <td>${r.tier ? `<span class="chip t${r.tier}">${tierName(r.tier)}</span>` : "—"}</td>
+      </tr>`).join("") || `<tr><td colspan="5" style="color:var(--muted)">No check-ins yet — be the first holder on the board.</td></tr>`;
+  }catch(e){ $("lbBody").innerHTML = `<tr><td colspan="5" style="color:var(--muted)">Leaderboard unavailable (contract not deployed yet).</td></tr>`; }
+}
+
+async function connect(){
+  if(!window.ethereum){ setStatus("No injected wallet found. Open this page in a wallet browser or with a wallet extension."); return; }
+  provider = new ethers.BrowserProvider(window.ethereum);
+  const net = await provider.getNetwork();
+  if(net.chainId !== BSC_CHAIN_ID){
+    try{ await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x38" }] }); }
+    catch(e){ setStatus("Please switch your wallet to BNB Chain (chainId 56) and reconnect."); return; }
+    provider = new ethers.BrowserProvider(window.ethereum);
+  }
+  signer = await provider.getSigner();
+  account = await signer.getAddress();
+  contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+  $("connectBtn").textContent = short(account);
+  await refreshMine();
+}
+
+async function refreshMine(){
+  if(!contract || !account) return;
+  const holder = await contract.isHolder(account);
+  const badge = $("holderBadge");
+  badge.classList.remove("hidden", "ok", "no");
+  badge.classList.add(holder ? "ok" : "no");
+  badge.textContent = holder ? "Agent ID holder — verified on-chain" : "No Agent ID on this address — holders only";
+
+  const [total, , longest, , , tier] = await contract.getUserStats(account);
+  const live = Number(await contract.liveStreak(account));
+  const doneToday = await contract.hasCheckedInToday(account);
+  const [, nextDays, daysToGo] = await contract.getMilestoneProgress(account);
+
+  $("statMine").textContent = total.toString();
+  $("streakNum").textContent = live;
+  $("streakSub").textContent = doneToday
+    ? `checked in today — longest streak ${longest} day${longest === 1n ? "" : "s"}`
+    : `longest streak ${longest} day${longest === 1n ? "" : "s"} — come back daily to grow it`;
+
+  // milestone progress bar (scale: 30 days = full bar)
+  $("msFill").style.width = Math.min(100, live / 30 * 100) + "%";
+  [7, 14, 30].forEach(d => $("mark" + d).classList.toggle("hit", live >= d));
+  [1, 2, 3].forEach(t => $("tier" + t).classList.toggle("earned", Number(tier) >= t));
+  $("msLabel").textContent = Number(nextDays) === 0
+    ? "All milestones passed on this run — keep the streak alive"
+    : `${daysToGo} more day${daysToGo === 1n ? "" : "s"} to the ${nextDays}-day milestone`;
+
+  const btn = $("checkinBtn");
+  btn.disabled = !holder || doneToday;
+  btn.textContent = !holder ? "Agent ID required" : doneToday ? "Checked in — see you tomorrow" : "Check in today";
+  if(holder && !doneToday) setStatus("One check-in per UTC day. It moves no assets — gas only.");
+}
+
+$("connectBtn").addEventListener("click", connect);
+$("checkinBtn").addEventListener("click", async () => {
+  if(!contract) return;
+  try{
+    setStatus("Confirm the check-in in your wallet…");
+    const tx = await contract.checkIn();
+    setStatus("Transaction sent — waiting for confirmation…");
+    await tx.wait();
+    setStatus("Checked in. Your streak is on-chain.");
+    await refreshMine(); await loadPublic();
+  }catch(e){
+    setStatus("Check-in failed: " + (e.shortMessage || e.message || e));
+  }
+});
+
+loadPublic();
+</script>
+</body>
+</html>
